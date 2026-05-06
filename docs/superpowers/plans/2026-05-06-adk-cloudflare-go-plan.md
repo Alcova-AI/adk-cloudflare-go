@@ -328,7 +328,7 @@ Implemented all three core converters: `FunctionDeclarationsToTools` converts ge
 Amended (b7b3992): Strengthened all 9 tests — replaced every `_ = result` discard with real assertions (name, description, properties, required, items recursion, type, nullable, enum). Added `TestFunctionDeclarationsToTools_WithJsonSchemaStruct` that constructs a real `*jsonschema.Schema` with Items recursion to exercise the previously unreached branch. Fixed `FunctionDeclarationsToTools` to wrap extracted properties in a proper JSON Schema object (`type: object`, `properties`, `required`) rather than placing property names at the top level of Parameters. Fixed `extractFunctionParams` map-alias bug — copies props into a fresh map instead of aliasing the caller's input. Softened `TestSchemaToMap_OptionalSubobject` required-field check to accept `[]string` or `[]any`. Added `// TODO: handle jsonschema.Schema.Types union` comment in `jsonSchemaPropToMap`. Commit: b7b3992
 
 ## Task 4: Request converter
-- [ ] Status
+- [x] Status
 Depends on: Task 3
 
 ### Scope
@@ -519,6 +519,10 @@ Tests added to `converters/converters_test.go`:
 - The doc editor's `OutputSchema` literal (object with required `message`, optional nested `file_ref`) round-trips through `BuildRequest` and produces a valid `response_format` payload with `strict: false`
 - A multi-turn fragment `[user(text), assistant(text+2 FunctionCalls), user(2 FunctionResponses), user(text)]` produces messages in the expected order with both `tool_call_id`s preserved verbatim — asserted as part of `parallel_function_responses_fan_out`
 - `go vet ./converters/...` clean
+
+### Result
+
+Implemented `BuildRequest` and all helpers in `converters/request.go`. All 17 new request-side test functions pass (26 total in the package), including the 8-sub-row `thinking_config_budget_thresholds` table and the multi-turn `parallel_function_responses_fan_out` test asserting both `tool_call_id`s preserved. One deviation from the spec's literal type names: `constant.JSONSchema` zero-value does not equal the string `"json_schema"` at the Go level — it marshals to that value — so the `response_schema_emits_response_format` test asserts the marshaled JSON contains `"json_schema"` rather than comparing the raw field. `go vet ./converters/...` and `go build ./...` both clean. Commit: b2cb0b2
 
 ## Task 5: Response converter
 - [ ] Status

@@ -1,10 +1,14 @@
 package converters
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/openai/openai-go/packages/param"
+	"github.com/openai/openai-go/shared"
+	"google.golang.org/adk/model"
 	"google.golang.org/genai"
 )
 
@@ -476,5 +480,635 @@ func TestSchemaToMap_Enum(t *testing.T) {
 		t.Errorf("expected enum to be []any, got %T", enumVal)
 	} else if len(enumList) != 3 {
 		t.Errorf("expected 3 enum values, got %d", len(enumList))
+	}
+}
+
+// ============================================================
+// Request converter tests (Task 4)
+// ============================================================
+
+func ptr32(v int32) *int32 { return &v }
+
+// helper: build a minimal LLMRequest with one user text message
+func userTextReq(text string) *model.LLMRequest {
+	return &model.LLMRequest{
+		Contents: []*genai.Content{
+			{Role: "user", Parts: []*genai.Part{{Text: text}}},
+		},
+	}
+}
+
+// Test: system_instruction_becomes_first_message
+func TestBuildRequest_SystemInstructionBecomesFirstMessage(t *testing.T) {
+	req := &model.LLMRequest{
+		Config: &genai.GenerateContentConfig{
+			SystemInstruction: &genai.Content{
+				Parts: []*genai.Part{{Text: "You are a helpful assistant."}},
+			},
+		},
+		Contents: []*genai.Content{
+			{Role: "user", Parts: []*genai.Part{{Text: "Hello"}}},
+		},
+	}
+	params, err := BuildRequest("test-model", req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(params.Messages) < 2 {
+		t.Fatalf("expected at least 2 messages, got %d", len(params.Messages))
+	}
+	first := params.Messages[0]
+	if first.OfSystem == nil {
+		t.Fatal("expected first message to be system message (OfSystem non-nil)")
+	}
+	if !first.OfSystem.Content.OfString.Valid() {
+		t.Fatal("expected system message content to be a string")
+	}
+	if first.OfSystem.Content.OfString.Value != "You are a helpful assistant." {
+		t.Errorf("expected system content %q, got %q", "You are a helpful assistant.", first.OfSystem.Content.OfString.Value)
+	}
+}
+
+// Test: user_content_becomes_user_message
+func TestBuildRequest_UserContentBecomesUserMessage(t *testing.T) {
+	params, err := BuildRequest("test-model", userTextReq("Hello"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(params.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(params.Messages))
+	}
+	msg := params.Messages[0]
+	if msg.OfUser == nil {
+		t.Fatal("expected user message (OfUser non-nil)")
+	}
+	if !msg.OfUser.Content.OfString.Valid() {
+		t.Fatal("expected user content to be a string")
+	}
+	if msg.OfUser.Content.OfString.Value != "Hello" {
+		t.Errorf("expected content %q, got %q", "Hello", msg.OfUser.Content.OfString.Value)
+	}
+}
+
+// Test: model_text_becomes_assistant_message
+func TestBuildRequest_ModelTextBecomesAssistantMessage(t *testing.T) {
+	req := &model.LLMRequest{
+		Contents: []*genai.Content{
+			{Role: "model", Parts: []*genai.Part{{Text: "I can help with that."}}},
+		},
+	}
+	params, err := BuildRequest("test-model", req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(params.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(params.Messages))
+	}
+	msg := params.Messages[0]
+	if msg.OfAssistant == nil {
+		t.Fatal("expected assistant message (OfAssistant non-nil)")
+	}
+	if !msg.OfAssistant.Content.OfString.Valid() {
+		t.Fatal("expected assistant content to be a string")
+	}
+	if msg.OfAssistant.Content.OfString.Value != "I can help with that." {
+		t.Errorf("expected content %q, got %q", "I can help with that.", msg.OfAssistant.Content.OfString.Value)
+	}
+}
+
+// Test: unset_role_defaults_to_user
+func TestBuildRequest_UnsetRoleDefaultsToUser(t *testing.T) {
+	req := &model.LLMRequest{
+		Contents: []*genai.Content{
+			{Role: "", Parts: []*genai.Part{{Text: "No role set"}}},
+		},
+	}
+	params, err := BuildRequest("test-model", req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(params.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(params.Messages))
+	}
+	msg := params.Messages[0]
+	if msg.OfUser == nil {
+		t.Fatalf("expected user message (OfUser non-nil) for empty role, got OfAssistant=%v", msg.OfAssistant)
+	}
+	if msg.OfUser.Content.OfString.Value != "No role set" {
+		t.Errorf("expected content %q, got %q", "No role set", msg.OfUser.Content.OfString.Value)
+	}
+}
+
+// Test: function_call_in_model_content
+func TestBuildRequest_FunctionCallInModelContent(t *testing.T) {
+	req := &model.LLMRequest{
+		Contents: []*genai.Content{
+			{
+				Role: "model",
+				Parts: []*genai.Part{
+					{FunctionCall: &genai.FunctionCall{ID: "call-123", Name: "myFunc", Args: map[string]any{"key": "value"}}},
+				},
+			},
+		},
+	}
+	params, err := BuildRequest("test-model", req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(params.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(params.Messages))
+	}
+	msg := params.Messages[0]
+	if msg.OfAssistant == nil {
+		t.Fatal("expected assistant message")
+	}
+	if len(msg.OfAssistant.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(msg.OfAssistant.ToolCalls))
+	}
+	tc := msg.OfAssistant.ToolCalls[0]
+	if tc.ID != "call-123" {
+		t.Errorf("expected tool call ID %q, got %q", "call-123", tc.ID)
+	}
+	if tc.Function.Name != "myFunc" {
+		t.Errorf("expected function name %q, got %q", "myFunc", tc.Function.Name)
+	}
+	// args should be JSON-stringified
+	var args map[string]any
+	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+		t.Fatalf("expected valid JSON args, got %q: %v", tc.Function.Arguments, err)
+	}
+	if args["key"] != "value" {
+		t.Errorf("expected args[key]=value, got %v", args["key"])
+	}
+}
+
+// Test: mixed_text_and_tool_calls
+func TestBuildRequest_MixedTextAndToolCalls(t *testing.T) {
+	req := &model.LLMRequest{
+		Contents: []*genai.Content{
+			{
+				Role: "model",
+				Parts: []*genai.Part{
+					{Text: "I'll call two functions."},
+					{FunctionCall: &genai.FunctionCall{ID: "call-1", Name: "funcA", Args: map[string]any{"x": 1.0}}},
+					{FunctionCall: &genai.FunctionCall{ID: "call-2", Name: "funcB", Args: map[string]any{"y": 2.0}}},
+				},
+			},
+		},
+	}
+	params, err := BuildRequest("test-model", req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(params.Messages) != 1 {
+		t.Fatalf("expected 1 message (assistant), got %d", len(params.Messages))
+	}
+	msg := params.Messages[0]
+	if msg.OfAssistant == nil {
+		t.Fatal("expected assistant message")
+	}
+	// text content
+	if !msg.OfAssistant.Content.OfString.Valid() {
+		t.Fatal("expected assistant content to have text")
+	}
+	if msg.OfAssistant.Content.OfString.Value != "I'll call two functions." {
+		t.Errorf("expected text content %q, got %q", "I'll call two functions.", msg.OfAssistant.Content.OfString.Value)
+	}
+	// two tool calls in order
+	if len(msg.OfAssistant.ToolCalls) != 2 {
+		t.Fatalf("expected 2 tool calls, got %d", len(msg.OfAssistant.ToolCalls))
+	}
+	if msg.OfAssistant.ToolCalls[0].ID != "call-1" {
+		t.Errorf("expected first tool call ID %q, got %q", "call-1", msg.OfAssistant.ToolCalls[0].ID)
+	}
+	if msg.OfAssistant.ToolCalls[1].ID != "call-2" {
+		t.Errorf("expected second tool call ID %q, got %q", "call-2", msg.OfAssistant.ToolCalls[1].ID)
+	}
+	if msg.OfAssistant.ToolCalls[0].Function.Name != "funcA" {
+		t.Errorf("expected first tool name %q, got %q", "funcA", msg.OfAssistant.ToolCalls[0].Function.Name)
+	}
+	if msg.OfAssistant.ToolCalls[1].Function.Name != "funcB" {
+		t.Errorf("expected second tool name %q, got %q", "funcB", msg.OfAssistant.ToolCalls[1].Function.Name)
+	}
+}
+
+// Test: function_response_becomes_tool_message
+func TestBuildRequest_FunctionResponseBecomesToolMessage(t *testing.T) {
+	req := &model.LLMRequest{
+		Contents: []*genai.Content{
+			{
+				Role: "user",
+				Parts: []*genai.Part{
+					{FunctionResponse: &genai.FunctionResponse{
+						ID:       "call-123",
+						Name:     "myFunc",
+						Response: map[string]any{"result": "ok"},
+					}},
+				},
+			},
+		},
+	}
+	params, err := BuildRequest("test-model", req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(params.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(params.Messages))
+	}
+	msg := params.Messages[0]
+	if msg.OfTool == nil {
+		t.Fatal("expected tool message (OfTool non-nil)")
+	}
+	if msg.OfTool.ToolCallID != "call-123" {
+		t.Errorf("expected tool_call_id %q, got %q", "call-123", msg.OfTool.ToolCallID)
+	}
+	if !msg.OfTool.Content.OfString.Valid() {
+		t.Fatal("expected tool content to be a string")
+	}
+	// content should be JSON-marshaled response
+	var content map[string]any
+	if err := json.Unmarshal([]byte(msg.OfTool.Content.OfString.Value), &content); err != nil {
+		t.Fatalf("expected valid JSON tool content, got %q: %v", msg.OfTool.Content.OfString.Value, err)
+	}
+	if content["result"] != "ok" {
+		t.Errorf("expected content[result]=ok, got %v", content["result"])
+	}
+}
+
+// Test: parallel_function_responses_fan_out
+// Also tests multi-turn: [user(text), assistant(text+2FunctionCalls), user(2FunctionResponses), user(text)]
+func TestBuildRequest_ParallelFunctionResponsesFanOut(t *testing.T) {
+	req := &model.LLMRequest{
+		Contents: []*genai.Content{
+			// Turn 1: user text
+			{Role: "user", Parts: []*genai.Part{{Text: "Call two functions please."}}},
+			// Turn 2: assistant with text + 2 function calls
+			{
+				Role: "model",
+				Parts: []*genai.Part{
+					{Text: "Calling both functions."},
+					{FunctionCall: &genai.FunctionCall{ID: "tc-aaa", Name: "funcA", Args: map[string]any{"a": 1.0}}},
+					{FunctionCall: &genai.FunctionCall{ID: "tc-bbb", Name: "funcB", Args: map[string]any{"b": 2.0}}},
+				},
+			},
+			// Turn 3: two function responses in one Content → fan out to 2 tool messages
+			{
+				Role: "user",
+				Parts: []*genai.Part{
+					{FunctionResponse: &genai.FunctionResponse{ID: "tc-aaa", Name: "funcA", Response: map[string]any{"r": "a"}}},
+					{FunctionResponse: &genai.FunctionResponse{ID: "tc-bbb", Name: "funcB", Response: map[string]any{"r": "b"}}},
+				},
+			},
+			// Turn 4: user text
+			{Role: "user", Parts: []*genai.Part{{Text: "Thanks!"}}},
+		},
+	}
+	params, err := BuildRequest("test-model", req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Expected: user(text), assistant(text+2calls), tool(tc-aaa), tool(tc-bbb), user(text) = 5 messages
+	if len(params.Messages) != 5 {
+		t.Fatalf("expected 5 messages, got %d", len(params.Messages))
+	}
+	// [0] user text
+	if params.Messages[0].OfUser == nil {
+		t.Error("expected message[0] to be user")
+	}
+	// [1] assistant with 2 tool calls
+	if params.Messages[1].OfAssistant == nil {
+		t.Error("expected message[1] to be assistant")
+	} else if len(params.Messages[1].OfAssistant.ToolCalls) != 2 {
+		t.Errorf("expected 2 tool calls in assistant message, got %d", len(params.Messages[1].OfAssistant.ToolCalls))
+	}
+	// [2] tool message for tc-aaa
+	if params.Messages[2].OfTool == nil {
+		t.Error("expected message[2] to be tool message")
+	} else if params.Messages[2].OfTool.ToolCallID != "tc-aaa" {
+		t.Errorf("expected tool_call_id %q, got %q", "tc-aaa", params.Messages[2].OfTool.ToolCallID)
+	}
+	// [3] tool message for tc-bbb
+	if params.Messages[3].OfTool == nil {
+		t.Error("expected message[3] to be tool message")
+	} else if params.Messages[3].OfTool.ToolCallID != "tc-bbb" {
+		t.Errorf("expected tool_call_id %q, got %q", "tc-bbb", params.Messages[3].OfTool.ToolCallID)
+	}
+	// [4] user text
+	if params.Messages[4].OfUser == nil {
+		t.Error("expected message[4] to be user")
+	} else if params.Messages[4].OfUser.Content.OfString.Value != "Thanks!" {
+		t.Errorf("expected final user text %q, got %q", "Thanks!", params.Messages[4].OfUser.Content.OfString.Value)
+	}
+}
+
+// Test: function_response_empty_id_errors
+func TestBuildRequest_FunctionResponseEmptyIDErrors(t *testing.T) {
+	req := &model.LLMRequest{
+		Contents: []*genai.Content{
+			{
+				Role: "user",
+				Parts: []*genai.Part{
+					{FunctionResponse: &genai.FunctionResponse{
+						ID:       "", // empty — should error
+						Name:     "myFunc",
+						Response: map[string]any{"result": "ok"},
+					}},
+				},
+			},
+		},
+	}
+	_, err := BuildRequest("test-model", req)
+	if err == nil {
+		t.Fatal("expected error for empty function response ID, got nil")
+	}
+	if !strings.Contains(err.Error(), "tool response missing call ID") {
+		t.Errorf("expected error to contain %q, got %q", "tool response missing call ID", err.Error())
+	}
+}
+
+// Test: multiple_text_parts_concatenate
+func TestBuildRequest_MultipleTextPartsConcatenate(t *testing.T) {
+	req := &model.LLMRequest{
+		Contents: []*genai.Content{
+			{Role: "user", Parts: []*genai.Part{{Text: "a"}, {Text: "b"}}},
+		},
+	}
+	params, err := BuildRequest("test-model", req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(params.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(params.Messages))
+	}
+	msg := params.Messages[0]
+	if msg.OfUser == nil {
+		t.Fatal("expected user message")
+	}
+	expected := "a\nb"
+	if msg.OfUser.Content.OfString.Value != expected {
+		t.Errorf("expected concatenated text %q, got %q", expected, msg.OfUser.Content.OfString.Value)
+	}
+}
+
+// Test: unsupported_part_silently_dropped
+// InlineData, FileData, Thought parts are dropped with a debug log, no error.
+func TestBuildRequest_UnsupportedPartSilentlyDropped(t *testing.T) {
+	req := &model.LLMRequest{
+		Contents: []*genai.Content{
+			{
+				Role: "user",
+				Parts: []*genai.Part{
+					{Text: "keep this"},
+					{InlineData: &genai.Blob{MIMEType: "image/png", Data: []byte{1, 2, 3}}},
+					{Thought: true, Text: "thinking..."},
+				},
+			},
+		},
+	}
+	params, err := BuildRequest("test-model", req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(params.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(params.Messages))
+	}
+	msg := params.Messages[0]
+	if msg.OfUser == nil {
+		t.Fatal("expected user message")
+	}
+	// Only the first non-Thought text part is kept. Thought part Text is also dropped.
+	// The concatenated text should be "keep this" only.
+	if msg.OfUser.Content.OfString.Value != "keep this" {
+		t.Errorf("expected content %q, got %q", "keep this", msg.OfUser.Content.OfString.Value)
+	}
+}
+
+// Test: response_schema_emits_response_format
+func TestBuildRequest_ResponseSchemaEmitsResponseFormat(t *testing.T) {
+	schema := &genai.Schema{
+		Type: genai.TypeObject,
+		Properties: map[string]*genai.Schema{
+			"name": {Type: genai.TypeString},
+		},
+		Required: []string{"name"},
+	}
+	req := &model.LLMRequest{
+		Config: &genai.GenerateContentConfig{
+			ResponseSchema: schema,
+		},
+		Contents: []*genai.Content{
+			{Role: "user", Parts: []*genai.Part{{Text: "hello"}}},
+		},
+	}
+	params, err := BuildRequest("test-model", req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if params.ResponseFormat.OfJSONSchema == nil {
+		t.Fatal("expected response_format.OfJSONSchema to be non-nil")
+	}
+	rf := params.ResponseFormat.OfJSONSchema
+	// type marshals as "json_schema" (zero value via Default() during marshal)
+	marshaled, err := rf.MarshalJSON()
+	if err != nil {
+		t.Fatalf("MarshalJSON failed: %v", err)
+	}
+	if !strings.Contains(string(marshaled), `"json_schema"`) {
+		t.Errorf("expected marshaled response_format to contain json_schema, got: %s", string(marshaled))
+	}
+	// strict must be false (omitted, not set to true)
+	if rf.JSONSchema.Strict.Valid() && rf.JSONSchema.Strict.Value {
+		t.Error("expected strict to not be true")
+	}
+	// schema must be non-nil and match SchemaToMap output
+	if rf.JSONSchema.Schema == nil {
+		t.Fatal("expected json_schema.schema to be non-nil")
+	}
+	schemaMap, ok := rf.JSONSchema.Schema.(map[string]any)
+	if !ok {
+		t.Fatalf("expected schema to be map[string]any, got %T", rf.JSONSchema.Schema)
+	}
+	if schemaMap["type"] != "object" {
+		t.Errorf("expected schema.type=%q, got %v", "object", schemaMap["type"])
+	}
+}
+
+// Test: response_schema_with_optional_subobject
+// Uses the doc editor OutputSchema pattern (object with required "message", optional "file_ref")
+func TestBuildRequest_ResponseSchemaWithOptionalSubobject(t *testing.T) {
+	docEditorOutputSchema := &genai.Schema{
+		Type: genai.TypeObject,
+		Properties: map[string]*genai.Schema{
+			"message": {Type: genai.TypeString, Description: "Human-readable summary of the edit."},
+			"file_ref": {
+				Type: genai.TypeObject,
+				Properties: map[string]*genai.Schema{
+					"uri":       {Type: genai.TypeString},
+					"name":      {Type: genai.TypeString},
+					"path":      {Type: genai.TypeString},
+					"mime_type": {Type: genai.TypeString},
+					"size":      {Type: genai.TypeInteger},
+					"version":   {Type: genai.TypeInteger},
+				},
+			},
+		},
+		Required: []string{"message"}, // file_ref is intentionally optional
+	}
+	req := &model.LLMRequest{
+		Config: &genai.GenerateContentConfig{
+			ResponseSchema: docEditorOutputSchema,
+		},
+		Contents: []*genai.Content{
+			{Role: "user", Parts: []*genai.Part{{Text: "edit the doc"}}},
+		},
+	}
+	params, err := BuildRequest("test-model", req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if params.ResponseFormat.OfJSONSchema == nil {
+		t.Fatal("expected OfJSONSchema to be non-nil")
+	}
+	schemaAny := params.ResponseFormat.OfJSONSchema.JSONSchema.Schema
+	schemaMap, ok := schemaAny.(map[string]any)
+	if !ok {
+		t.Fatalf("expected schema to be map[string]any, got %T", schemaAny)
+	}
+	// top-level required = ["message"]
+	req2, ok := schemaMap["required"].([]string)
+	if !ok {
+		t.Fatalf("expected required to be []string, got %T", schemaMap["required"])
+	}
+	if len(req2) != 1 || req2[0] != "message" {
+		t.Errorf("expected required=[\"message\"], got %v", req2)
+	}
+	// properties.file_ref.type == "object"
+	propsMap, ok := schemaMap["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected properties to be map[string]any, got %T", schemaMap["properties"])
+	}
+	fileRefMap, ok := propsMap["file_ref"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected file_ref to be map[string]any, got %T", propsMap["file_ref"])
+	}
+	if fileRefMap["type"] != "object" {
+		t.Errorf("expected file_ref.type=object, got %v", fileRefMap["type"])
+	}
+}
+
+// Test: thinking_config_budget_thresholds
+func TestBuildRequest_ThinkingConfigBudgetThresholds(t *testing.T) {
+	tests := []struct {
+		name         string
+		config       *genai.ThinkingConfig
+		wantEffort   shared.ReasoningEffort
+		wantOK       bool
+	}{
+		{name: "nil config", config: nil, wantEffort: "", wantOK: false},
+		{name: "nil budget", config: &genai.ThinkingConfig{ThinkingBudget: nil}, wantEffort: shared.ReasoningEffortMedium, wantOK: true},
+		{name: "budget=0", config: &genai.ThinkingConfig{ThinkingBudget: ptr32(0)}, wantEffort: shared.ReasoningEffortLow, wantOK: true},
+		{name: "budget=4095", config: &genai.ThinkingConfig{ThinkingBudget: ptr32(4095)}, wantEffort: shared.ReasoningEffortLow, wantOK: true},
+		{name: "budget=4096", config: &genai.ThinkingConfig{ThinkingBudget: ptr32(4096)}, wantEffort: shared.ReasoningEffortMedium, wantOK: true},
+		{name: "budget=16383", config: &genai.ThinkingConfig{ThinkingBudget: ptr32(16383)}, wantEffort: shared.ReasoningEffortMedium, wantOK: true},
+		{name: "budget=16384", config: &genai.ThinkingConfig{ThinkingBudget: ptr32(16384)}, wantEffort: shared.ReasoningEffortHigh, wantOK: true},
+		{name: "budget=100000", config: &genai.ThinkingConfig{ThinkingBudget: ptr32(100000)}, wantEffort: shared.ReasoningEffortHigh, wantOK: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotEffort, gotOK := thinkingBudgetToEffort(tt.config)
+			if gotOK != tt.wantOK {
+				t.Errorf("ok: expected %v, got %v", tt.wantOK, gotOK)
+			}
+			if gotOK && gotEffort != tt.wantEffort {
+				t.Errorf("effort: expected %q, got %q", tt.wantEffort, gotEffort)
+			}
+		})
+	}
+}
+
+// Test: topk_dropped
+func TestBuildRequest_TopKDropped(t *testing.T) {
+	topk := float32(40)
+	req := &model.LLMRequest{
+		Config: &genai.GenerateContentConfig{
+			TopK: &topk,
+		},
+		Contents: []*genai.Content{
+			{Role: "user", Parts: []*genai.Part{{Text: "hi"}}},
+		},
+	}
+	params, err := BuildRequest("test-model", req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Marshal to JSON and verify there is no top_k field
+	data, err := params.MarshalJSON()
+	if err != nil {
+		t.Fatalf("MarshalJSON failed: %v", err)
+	}
+	if strings.Contains(string(data), "top_k") {
+		t.Errorf("expected no top_k in marshaled request, got: %s", string(data))
+	}
+}
+
+// Test: generation_params_mapped_to_request
+func TestBuildRequest_GenerationParamsMappedToRequest(t *testing.T) {
+	temp := float32(0.7)
+	topP := float32(0.9)
+	req := &model.LLMRequest{
+		Config: &genai.GenerateContentConfig{
+			Temperature:     &temp,
+			TopP:            &topP,
+			StopSequences:   []string{"END", "STOP"},
+			MaxOutputTokens: 512,
+		},
+		Contents: []*genai.Content{
+			{Role: "user", Parts: []*genai.Part{{Text: "hi"}}},
+		},
+	}
+	params, err := BuildRequest("test-model", req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !params.Temperature.Valid() {
+		t.Fatal("expected Temperature to be set")
+	}
+	if params.Temperature.Value != float64(temp) {
+		t.Errorf("expected temperature=%v, got %v", float64(temp), params.Temperature.Value)
+	}
+	if !params.TopP.Valid() {
+		t.Fatal("expected TopP to be set")
+	}
+	if params.TopP.Value != float64(topP) {
+		t.Errorf("expected top_p=%v, got %v", float64(topP), params.TopP.Value)
+	}
+	// Stop sequences
+	if param.IsOmitted(params.Stop.OfStringArray) {
+		t.Fatal("expected stop sequences to be set as array")
+	}
+	if len(params.Stop.OfStringArray) != 2 {
+		t.Errorf("expected 2 stop sequences, got %d", len(params.Stop.OfStringArray))
+	}
+	// MaxTokens
+	if !params.MaxTokens.Valid() {
+		t.Fatal("expected MaxTokens to be set")
+	}
+	if params.MaxTokens.Value != 512 {
+		t.Errorf("expected max_tokens=512, got %d", params.MaxTokens.Value)
+	}
+}
+
+// Test: empty_contents_and_no_system_errors
+func TestBuildRequest_EmptyContentsAndNoSystemErrors(t *testing.T) {
+	req := &model.LLMRequest{
+		Config:   &genai.GenerateContentConfig{SystemInstruction: nil},
+		Contents: nil,
+	}
+	_, err := BuildRequest("test-model", req)
+	if err == nil {
+		t.Fatal("expected error for empty contents, got nil")
+	}
+	if !strings.Contains(err.Error(), "at least one message required") {
+		t.Errorf("expected error to contain %q, got %q", "at least one message required", err.Error())
 	}
 }
