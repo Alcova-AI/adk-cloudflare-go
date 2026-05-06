@@ -1114,6 +1114,17 @@ func TestBuildRequest_EmptyContentsAndNoSystemErrors(t *testing.T) {
 	}
 }
 
+// Test: nil_request_errors
+func TestBuildRequest_NilRequestErrors(t *testing.T) {
+	_, err := BuildRequest("test-model", nil)
+	if err == nil {
+		t.Fatal("expected error for nil request, got nil")
+	}
+	if !strings.Contains(err.Error(), "request is nil") {
+		t.Errorf("expected error to contain %q, got %q", "request is nil", err.Error())
+	}
+}
+
 // ============================================================
 // Response converter tests (Task 5)
 // ============================================================

@@ -22,6 +22,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 
@@ -50,8 +51,9 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		// resp.Content.Parts[0].Text contains the model's text response
-		_ = resp
+		if len(resp.Content.Parts) > 0 {
+			fmt.Println(resp.Content.Parts[0].Text)
+		}
 	}
 }
 ```

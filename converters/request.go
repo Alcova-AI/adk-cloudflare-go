@@ -23,6 +23,10 @@ import (
 //
 // Portions of contentToMessages adapted from github.com/volcengine/veadk-go (Apache 2.0).
 func BuildRequest(modelName string, req *model.LLMRequest) (openai.ChatCompletionNewParams, error) {
+	if req == nil {
+		return openai.ChatCompletionNewParams{}, errors.New("request is nil")
+	}
+
 	var msgs []openai.ChatCompletionMessageParamUnion
 
 	if req.Config != nil && req.Config.SystemInstruction != nil {
