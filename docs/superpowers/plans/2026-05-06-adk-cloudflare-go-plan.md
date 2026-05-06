@@ -3,7 +3,7 @@
 Spec: docs/superpowers/specs/2026-05-06-adk-cloudflare-go-design.md
 
 ## Task 1: Bootstrap the repo
-- [ ] Status
+- [x] Status
 
 ### Scope
 
@@ -66,6 +66,10 @@ Every Go file created in this and subsequent tasks carries a single-line `// Cop
 - `README.md` documents installation, the v0.1 feature list, and a minimal usage example
 - `doc.go` contains the package godoc verbatim from the Approach section
 - `.github/workflows/ci.yaml` is valid YAML (verify with `yq` or any YAML parser)
+
+### Result
+
+Created all structural files: `go.mod` with dependencies pinned (google.golang.org/adk v1.0.0, google.golang.org/genai v1.40.0, github.com/openai/openai-go v1.12.0, github.com/google/go-cmp v0.7.0), `go.sum` with transitive deps resolved, `README.md` with installation/features/usage showing correct `GenerateContent(ctx, req, stream bool) iter.Seq2[...]` signature with `model.LLMRequest` and iteration example, `doc.go` with package godoc including thinking-config warning verbatim, and `.github/workflows/ci.yaml` with go test/vet CI. Anchored runtime dependencies in `tools.go` with `//go:build tools` tag to exclude from production builds. Removed `config.go` per Task 2 scope (which defines the fuller Config struct). Verified: `go mod tidy` clean, `go vet ./...` clean, `go build ./...` clean, `tools.go` excluded from `go list -f '{{.GoFiles}}'`. Commit: 71e4f13
 
 ## Task 2: Config and NewModel skeleton
 - [ ] Status
