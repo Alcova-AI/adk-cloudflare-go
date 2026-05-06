@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/packages/param"
 	"github.com/openai/openai-go/shared"
 	"google.golang.org/adk/model"
@@ -1110,5 +1111,246 @@ func TestBuildRequest_EmptyContentsAndNoSystemErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "at least one message required") {
 		t.Errorf("expected error to contain %q, got %q", "at least one message required", err.Error())
+	}
+}
+
+// ============================================================
+// Response converter tests (Task 5)
+// ============================================================
+
+// helper: build a minimal ChatCompletion with one choice
+func makeCompletion(content string, toolCalls []openai.ChatCompletionMessageToolCall, finishReason string) openai.ChatCompletion {
+	return openai.ChatCompletion{
+		Choices: []openai.ChatCompletionChoice{
+			{
+				FinishReason: finishReason,
+				Message: openai.ChatCompletionMessage{
+					Content:   content,
+					ToolCalls: toolCalls,
+				},
+			},
+		},
+	}
+}
+
+// helper: build a tool call
+func makeToolCall(id, name, args string) openai.ChatCompletionMessageToolCall {
+	return openai.ChatCompletionMessageToolCall{
+		ID: id,
+		Function: openai.ChatCompletionMessageToolCallFunction{
+			Name:      name,
+			Arguments: args,
+		},
+	}
+}
+
+// Test: usage_extracted
+func TestCompletionToLLMResponse_UsageExtracted(t *testing.T) {
+	c := makeCompletion("hi", nil, "stop")
+	c.Usage = openai.CompletionUsage{
+		PromptTokens:     10,
+		CompletionTokens: 20,
+		TotalTokens:      30,
+	}
+	resp, err := CompletionToLLMResponse(&c)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.UsageMetadata == nil {
+		t.Fatal("expected UsageMetadata to be non-nil")
+	}
+	if resp.UsageMetadata.PromptTokenCount != 10 {
+		t.Errorf("expected PromptTokenCount=10, got %d", resp.UsageMetadata.PromptTokenCount)
+	}
+	if resp.UsageMetadata.CandidatesTokenCount != 20 {
+		t.Errorf("expected CandidatesTokenCount=20, got %d", resp.UsageMetadata.CandidatesTokenCount)
+	}
+	if resp.UsageMetadata.TotalTokenCount != 30 {
+		t.Errorf("expected TotalTokenCount=30, got %d", resp.UsageMetadata.TotalTokenCount)
+	}
+}
+
+// Test: usage_zero_leaves_metadata_nil
+func TestCompletionToLLMResponse_UsageZeroLeavesMetadataNil(t *testing.T) {
+	c := makeCompletion("hi", nil, "stop")
+	// Usage is zero-valued (all token counts are 0)
+	resp, err := CompletionToLLMResponse(&c)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.UsageMetadata != nil {
+		t.Errorf("expected UsageMetadata to be nil for all-zero usage, got %+v", resp.UsageMetadata)
+	}
+}
+
+// Test: finish_reason_mapping (table-driven, 6 rows)
+func TestCompletionToLLMResponse_FinishReasonMapping(t *testing.T) {
+	tests := []struct {
+		input string
+		want  genai.FinishReason
+	}{
+		{"stop", genai.FinishReasonStop},
+		{"tool_calls", genai.FinishReasonStop},
+		{"length", genai.FinishReasonMaxTokens},
+		{"content_filter", genai.FinishReasonSafety},
+		{"weird", genai.FinishReasonOther},
+		{"", genai.FinishReasonOther},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			c := makeCompletion("hi", nil, tt.input)
+			resp, err := CompletionToLLMResponse(&c)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if resp.FinishReason != tt.want {
+				t.Errorf("finish reason: expected %q, got %q", tt.want, resp.FinishReason)
+			}
+		})
+	}
+}
+
+// Test: mixed_response_text_and_tool_calls
+func TestCompletionToLLMResponse_MixedResponseTextAndToolCalls(t *testing.T) {
+	tc := makeToolCall("call_xyz", "myFunc", `{"a":1}`)
+	c := makeCompletion("hi", []openai.ChatCompletionMessageToolCall{tc}, "tool_calls")
+	resp, err := CompletionToLLMResponse(&c)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Content == nil {
+		t.Fatal("expected non-nil Content")
+	}
+	parts := resp.Content.Parts
+	if len(parts) != 2 {
+		t.Fatalf("expected 2 parts (text+functioncall), got %d", len(parts))
+	}
+	// First part must be text
+	if parts[0].Text != "hi" {
+		t.Errorf("expected parts[0].Text=%q, got %q", "hi", parts[0].Text)
+	}
+	// Second part must be function call
+	if parts[1].FunctionCall == nil {
+		t.Fatal("expected parts[1] to be a FunctionCall")
+	}
+	if parts[1].FunctionCall.Name != "myFunc" {
+		t.Errorf("expected FunctionCall.Name=%q, got %q", "myFunc", parts[1].FunctionCall.Name)
+	}
+}
+
+// Test: response_only_tool_calls
+func TestCompletionToLLMResponse_ResponseOnlyToolCalls(t *testing.T) {
+	tcs := []openai.ChatCompletionMessageToolCall{
+		makeToolCall("call_1", "funcA", `{"x":1}`),
+		makeToolCall("call_2", "funcB", `{"y":2}`),
+	}
+	c := makeCompletion("", tcs, "tool_calls")
+	resp, err := CompletionToLLMResponse(&c)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	parts := resp.Content.Parts
+	if len(parts) != 2 {
+		t.Fatalf("expected 2 parts, got %d", len(parts))
+	}
+	for i, p := range parts {
+		if p.Text != "" {
+			t.Errorf("parts[%d]: expected no text, got %q", i, p.Text)
+		}
+		if p.FunctionCall == nil {
+			t.Errorf("parts[%d]: expected FunctionCall to be non-nil", i)
+		}
+	}
+}
+
+// Test: response_only_text
+func TestCompletionToLLMResponse_ResponseOnlyText(t *testing.T) {
+	c := makeCompletion("hi", nil, "stop")
+	resp, err := CompletionToLLMResponse(&c)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	parts := resp.Content.Parts
+	if len(parts) != 1 {
+		t.Fatalf("expected 1 part, got %d", len(parts))
+	}
+	if parts[0].Text != "hi" {
+		t.Errorf("expected parts[0].Text=%q, got %q", "hi", parts[0].Text)
+	}
+	if parts[0].FunctionCall != nil {
+		t.Error("expected no FunctionCall in parts[0]")
+	}
+}
+
+// Test: response_empty
+func TestCompletionToLLMResponse_ResponseEmpty(t *testing.T) {
+	c := makeCompletion("", nil, "stop")
+	resp, err := CompletionToLLMResponse(&c)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Content == nil {
+		t.Fatal("expected non-nil Content")
+	}
+	if len(resp.Content.Parts) != 0 {
+		t.Errorf("expected 0 parts for empty message, got %d", len(resp.Content.Parts))
+	}
+}
+
+// Test: response_no_choices_errors
+func TestCompletionToLLMResponse_ResponseNoChoicesErrors(t *testing.T) {
+	c := openai.ChatCompletion{
+		Choices: nil,
+	}
+	_, err := CompletionToLLMResponse(&c)
+	if err == nil {
+		t.Fatal("expected error for no choices, got nil")
+	}
+	// Error must be bare — no "converting response:" prefix
+	want := "no choices in response"
+	if err.Error() != want {
+		t.Errorf("expected error %q, got %q", want, err.Error())
+	}
+}
+
+// Test: tool_call_args_unparseable_errors
+func TestCompletionToLLMResponse_ToolCallArgsUnparseableErrors(t *testing.T) {
+	// "[1,2,3]" is valid JSON but not an object — unmarshal into map[string]any fails
+	tc := makeToolCall("call_bad", "myFunc", "[1,2,3]")
+	c := makeCompletion("", []openai.ChatCompletionMessageToolCall{tc}, "tool_calls")
+	_, err := CompletionToLLMResponse(&c)
+	if err == nil {
+		t.Fatal("expected error for unparseable tool call args, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "parsing tool call args") {
+		t.Errorf("expected error to contain %q, got %q", "parsing tool call args", msg)
+	}
+	if !strings.Contains(msg, "myFunc") {
+		t.Errorf("expected error to contain function name %q, got %q", "myFunc", msg)
+	}
+	if !strings.Contains(msg, "call_bad") {
+		t.Errorf("expected error to contain tool call id %q, got %q", "call_bad", msg)
+	}
+}
+
+// Test: tool_call_id_preserved
+func TestCompletionToLLMResponse_ToolCallIDPreserved(t *testing.T) {
+	const wantID = "call_abc"
+	tc := makeToolCall(wantID, "myFunc", `{}`)
+	c := makeCompletion("", []openai.ChatCompletionMessageToolCall{tc}, "tool_calls")
+	resp, err := CompletionToLLMResponse(&c)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Content.Parts) == 0 {
+		t.Fatal("expected at least one part")
+	}
+	fc := resp.Content.Parts[0].FunctionCall
+	if fc == nil {
+		t.Fatal("expected FunctionCall in parts[0]")
+	}
+	if fc.ID != wantID {
+		t.Errorf("tool call ID: expected %q, got %q", wantID, fc.ID)
 	}
 }

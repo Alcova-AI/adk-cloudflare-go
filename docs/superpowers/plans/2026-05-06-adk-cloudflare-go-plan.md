@@ -525,7 +525,7 @@ Tests added to `converters/converters_test.go`:
 Implemented `BuildRequest` and all helpers in `converters/request.go`. All 17 new request-side test functions pass (26 total in the package), including the 8-sub-row `thinking_config_budget_thresholds` table and the multi-turn `parallel_function_responses_fan_out` test asserting both `tool_call_id`s preserved. One deviation from the spec's literal type names: `constant.JSONSchema` zero-value does not equal the string `"json_schema"` at the Go level — it marshals to that value — so the `response_schema_emits_response_format` test asserts the marshaled JSON contains `"json_schema"` rather than comparing the raw field. `go vet ./converters/...` and `go build ./...` both clean. Commit: b2cb0b2
 
 ## Task 5: Response converter
-- [ ] Status
+- [x] Status
 Depends on: Task 4
 
 ### Scope
@@ -629,6 +629,10 @@ Tests added to `converters/converters_test.go`:
 - `tool_call_id` fidelity: a known id in the input `ChatCompletion.Choices[0].Message.ToolCalls[i].ID` is byte-for-byte equal to the resulting `Part.FunctionCall.ID` — explicitly asserted by `tool_call_id_preserved`
 - Errors from this layer carry bare messages (no `"converting response:"` prefix); Task 6 adds the prefix
 - `go vet ./converters/...` clean
+
+### Result
+
+Implemented `CompletionToLLMResponse` in `converters/response.go` with helpers `messageToParts` and `mapFinishReason`. Key deviation from spec: `ChatCompletionChoice.FinishReason` is a plain `string` in openai-go v1.12 (not a typed constant), so `mapFinishReason` accepts `string` directly without a `string(...)` cast. `CompletionUsage` token fields are `int64`, converted to `int32` for genai metadata. All 10 response-side tests pass (36 total in package, `finish_reason_mapping` has 6 sub-rows). `go vet ./converters/...` and `go build ./...` both clean. Commit: b36697d
 
 ## Task 6: GenerateContent and integration tests
 - [ ] Status
