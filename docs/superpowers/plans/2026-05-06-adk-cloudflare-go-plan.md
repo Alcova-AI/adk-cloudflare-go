@@ -635,7 +635,7 @@ Tests added to `converters/converters_test.go`:
 Implemented `CompletionToLLMResponse` in `converters/response.go` with helpers `messageToParts` and `mapFinishReason`. Key deviation from spec: `ChatCompletionChoice.FinishReason` is a plain `string` in openai-go v1.12 (not a typed constant), so `mapFinishReason` accepts `string` directly without a `string(...)` cast. `CompletionUsage` token fields are `int64`, converted to `int32` for genai metadata. All 10 response-side tests pass (36 total in package, `finish_reason_mapping` has 6 sub-rows). `go vet ./converters/...` and `go build ./...` both clean. Commit: b36697d
 
 ## Task 6: GenerateContent and integration tests
-- [ ] Status
+- [x] Status
 Depends on: Task 5
 
 ### Scope
@@ -738,3 +738,7 @@ New tests:
 - `default_max_tokens_used_when_unset` passes, asserting `m.maxTokens` reaches the wire body when the request omits MaxOutputTokens
 - `go test ./...` and `go vet ./...` both clean
 - The package interface conformance assertion `var _ model.LLM = (*cfModel)(nil)` still holds
+
+### Result
+
+Replaced the Task-2 no-op stub with the real `generate()` pipeline wiring `converters.BuildRequest` → openai-go `Chat.Completions.New` → `converters.CompletionToLLMResponse`. Per-instance `maxTokens` fallback uses `!params.MaxTokens.Valid()` (the correct openai-go v1.12 "unset" check). Replaced `TestGenerateContentStubYieldsNothing` with 7 new integration tests backed by a `fakeTransport` that queues canned HTTP responses. All 15 top-level tests pass plus 36 converters tests (51 total). `go test ./...`, `go vet ./...`, and `go build ./...` all clean. `multi_turn_tool_loop_preserves_ids` asserts all 4 wire messages and both `call_a`/`call_b` IDs byte-for-byte. Commit: c1cc5f8
