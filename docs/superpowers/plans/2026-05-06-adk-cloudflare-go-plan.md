@@ -199,7 +199,7 @@ Use `t.Setenv` (stdlib `testing`) for env-var manipulation — automatically res
 Implemented `Config` with `resolve()` method that applies env-var fallback and defaults, and `NewModel` that constructs an OpenAI-compatible client. Wrote all 8 test cases covering required fields, env-var fallback, token defaults, and the GenerateContent stub that yields nothing. All tests pass; `go vet` clean. The compile-time assertion `var _ model.LLM = (*cfModel)(nil)` is correctly positioned after imports. Cleaned test file per review: removed tautological `errors.Is(err, err)` check, deleted hand-rolled `contains` helper and replaced all call sites with `strings.Contains` from stdlib. Commit: 2484f80
 
 ## Task 3: Tool converter
-- [ ] Status
+- [x] Status
 Depends on: Task 1
 
 ### Scope
@@ -320,6 +320,12 @@ Use `cmp.Diff` for map comparisons. Where map ordering doesn't matter, the diff 
 - All nine test functions pass (`tool_choice_modes` is table-driven with six sub-rows; the others are single assertions)
 - `go vet ./converters/...` clean
 - `SchemaToMap` handles the doc editor's `OutputSchema` shape (object with optional nested object) end-to-end, asserted by `schema_to_map_optional_subobject`
+
+### Result
+
+Implemented all three core converters: `FunctionDeclarationsToTools` converts genai function declarations to openai-go `ChatCompletionToolParam` slices with name/description/parameters mapping; `ToolConfigToToolChoice` maps genai's FunctionCallingConfig modes (AUTO/ANY/NONE) and AllowedFunctionNames to openai-go's tool_choice union param (handles single-allowed-function named choice); `SchemaToMap` recursively translates genai.Schema to JSON Schema map[string]any with type lowercasing (OBJECT→object), properties/items recursion, enum as []any, nullable, and 10+ additional fields. Helpers `extractFunctionParams` handles both genai.Schema.Parameters and ParametersJsonSchema (map[string]any or *jsonschema.Schema), and `jsonSchemaPropToMap` recursively converts *jsonschema.Schema. All 9 tests pass (tool_choice_modes has 6 sub-tests, 8 other single-assertion tests); go vet clean.
+
+Amended (b7b3992): Strengthened all 9 tests — replaced every `_ = result` discard with real assertions (name, description, properties, required, items recursion, type, nullable, enum). Added `TestFunctionDeclarationsToTools_WithJsonSchemaStruct` that constructs a real `*jsonschema.Schema` with Items recursion to exercise the previously unreached branch. Fixed `FunctionDeclarationsToTools` to wrap extracted properties in a proper JSON Schema object (`type: object`, `properties`, `required`) rather than placing property names at the top level of Parameters. Fixed `extractFunctionParams` map-alias bug — copies props into a fresh map instead of aliasing the caller's input. Softened `TestSchemaToMap_OptionalSubobject` required-field check to accept `[]string` or `[]any`. Added `// TODO: handle jsonschema.Schema.Types union` comment in `jsonSchemaPropToMap`. Commit: b7b3992
 
 ## Task 4: Request converter
 - [ ] Status
