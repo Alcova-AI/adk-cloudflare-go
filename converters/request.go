@@ -61,7 +61,16 @@ func BuildRequest(modelName string, req *model.LLMRequest) (openai.ChatCompletio
 		if req.Config.ToolConfig != nil {
 			params.ToolChoice = ToolConfigToToolChoice(req.Config.ToolConfig)
 		}
-		if req.Config.ResponseSchema != nil {
+		// Suppress response_format whenever the request declares tools.
+		// Some Workers AI models (notably kimi-k2.6) collapse tool-calling
+		// into the schema's text fields when both are sent on the same
+		// request — emitting tool-call XML inside the schema's message
+		// string instead of structured tool_calls. ADK's
+		// agenttool.ValidateOutputSchema still enforces the schema after
+		// the run returns, so omitting the wire-level constraint here
+		// only relaxes the per-turn JSON guarantee — not the eventual
+		// validation.
+		if req.Config.ResponseSchema != nil && len(req.Config.Tools) == 0 {
 			params.ResponseFormat = buildResponseFormat(req.Config.ResponseSchema)
 		}
 		if effort, ok := thinkingBudgetToEffort(req.Config.ThinkingConfig); ok {

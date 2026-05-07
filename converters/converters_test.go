@@ -884,6 +884,57 @@ func TestBuildRequest_UnsupportedPartSilentlyDropped(t *testing.T) {
 	}
 }
 
+// Test: response_schema_with_tools_omits_response_format
+//
+// When the request declares both Tools and a ResponseSchema, BuildRequest
+// must NOT set response_format on the wire. Some Workers AI models
+// (notably kimi-k2.6) collapse tool-calling into the schema's text fields
+// when both are sent — emitting tool-call XML inside the message string
+// instead of structured tool_calls. ADK's agenttool.ValidateOutputSchema
+// still enforces the schema after the run returns, so we don't lose
+// validation by suppressing the wire-level constraint.
+func TestBuildRequest_ResponseSchemaWithToolsOmitsResponseFormat(t *testing.T) {
+	schema := &genai.Schema{
+		Type:       genai.TypeObject,
+		Properties: map[string]*genai.Schema{"message": {Type: genai.TypeString}},
+		Required:   []string{"message"},
+	}
+	tools := []*genai.Tool{{
+		FunctionDeclarations: []*genai.FunctionDeclaration{{
+			Name:        "read_doc",
+			Description: "read the document",
+			Parameters: &genai.Schema{
+				Type:       genai.TypeObject,
+				Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString}},
+				Required:   []string{"path"},
+			},
+		}},
+	}}
+	req := &model.LLMRequest{
+		Config: &genai.GenerateContentConfig{
+			ResponseSchema: schema,
+			Tools:          tools,
+		},
+		Contents: []*genai.Content{{Role: "user", Parts: []*genai.Part{{Text: "go"}}}},
+	}
+	params, err := BuildRequest("test-model", req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if params.ResponseFormat.OfJSONSchema != nil {
+		t.Error("expected response_format to be unset when Tools are present")
+	}
+	if params.ResponseFormat.OfJSONObject != nil {
+		t.Error("expected response_format to be unset when Tools are present")
+	}
+	if params.ResponseFormat.OfText != nil {
+		t.Error("expected response_format to be unset when Tools are present")
+	}
+	if len(params.Tools) != 1 {
+		t.Errorf("expected 1 tool to be set on the request, got %d", len(params.Tools))
+	}
+}
+
 // Test: response_schema_emits_response_format
 func TestBuildRequest_ResponseSchemaEmitsResponseFormat(t *testing.T) {
 	schema := &genai.Schema{

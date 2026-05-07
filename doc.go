@@ -18,4 +18,12 @@
 // is NOT decoded back into genai.Part{Thought: true}. If a future caller
 // needs reasoning output surfaced, the response-side decoder will be
 // added with knowledge of the specific model's wire shape.
+//
+// response_format is suppressed when the request declares tools. Some
+// Workers AI models (notably kimi-k2.6) collapse tool-calling into the
+// schema's text fields when both are sent — emitting tool-call XML
+// inside the message string instead of structured tool_calls. ADK's
+// agenttool.ValidateOutputSchema still enforces the schema after the
+// run returns, so omitting the wire-level constraint here only relaxes
+// the per-turn JSON guarantee, not the eventual validation.
 package adkcloudflare
